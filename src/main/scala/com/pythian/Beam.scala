@@ -5,6 +5,10 @@ import com.typesafe.scalalogging.LazyLogging
 import com.google.api.services.bigquery.model.{ TableReference, TableRow }
 import com.google.api.services.dataflow.DataflowScopes
 import com.google.auth.oauth2.ServiceAccountCredentials
+import com.google.gson.JsonParser
+import org.apache.beam.sdk.transforms.View
+import org.apache.beam.sdk.transforms.windowing._
+import org.apache.beam.sdk.values.PCollectionView
 //import org.apache.beam.runners.dataflow.DataflowRunner
 import org.apache.beam.sdk.Pipeline
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO
@@ -29,6 +33,7 @@ object Beam extends App {
   val dataset = "test_nikotin"
   val tableName = "test"
   val subscription = "test-dataflow"
+  val sideInputSubscription = "test-dataflow-sideinput"
 
   /* configuration for runner */
   //val runner = classOf[DataflowRunner]
@@ -50,35 +55,52 @@ object Beam extends App {
   options.setGcpTempLocation(gcpTempLocation)
   options.setStreaming(true)
 
-  /* pipeline reading messages from given subscription and streaming them into BigQuery table */
+  /* pipeline reading messages from given subscription and streaming them into BigQuery table,
+     using sideInput from another subscription as control stream */
   val fullSubscriptionName = s"projects/$projectId/subscriptions/$subscription"
+  val fullSideInputSubscriptionName = s"projects/$projectId/subscriptions/$sideInputSubscription"
   val targetTable = new TableReference().setProjectId(projectId).setDatasetId(dataset).setTableId(tableName)
 
-  /* check more information about encoding https://beam.apache.org/documentation/programming-guide/#data-encoding-and-type-safety */
-  //@DefaultCoder(classOf[AvroCoder[TableRow]])
-
-  /* Simple DoFn: trying to convert Strings into TableRow */
-  class MyDoFn extends DoFn[String, TableRow] with LazyLogging {
+  /* convering strings to table rows and pass them to output when sideinput contains "ON" */
+  class MyDoFn(sideView: PCollectionView[String]) extends DoFn[String, TableRow] with LazyLogging {
     @ProcessElement
     def processElement(c: ProcessContext) {
+      val sideInput = c.sideInput(sideView)
       val inputString = c.element()
-      logger.info(s"Received message: $inputString")
-      Try {
-        Transport.getJsonFactory.fromString(inputString, classOf[TableRow])
-      } match {
-        case Success(row) ⇒
-          logger.info(s"Converted to TableRow: $row")
-          c.output(row)
-        case Failure(ex) ⇒
-          logger.info(s"Unable to parse message: $inputString", ex)
+      if (sideInput == "ENABLED") {
+        Try {
+          val json = new JsonParser().parse(inputString).getAsJsonObject
+          new TableRow()
+            .set("id", json.get("id").getAsLong)
+            .set("data", json.get("text").getAsString)
+        } match {
+          case Success(row) ⇒
+            logger.info(s"Inserting to BiqQuery: $row")
+            c.output(row)
+          case Failure(ex) ⇒
+            logger.info(s"Unable to parse message: $inputString", ex)
+        }
+      } else {
+        logger.info(s"Ignoring input messages, sideInput=$sideInput")
       }
     }
   }
 
-  /* building pipeline to read Strings from PubsubIO, convert them to TableRows and write to BQ table, not validating table schema */
+  /* building pipeline */
   val p = Pipeline.create(options)
+
+  /* reading from pubsub with controls, applying global window and triggering for every incoming message */
+  val sideView = p.apply("read-pubsub-side", PubsubIO.readStrings().fromSubscription(fullSideInputSubscriptionName))
+    .apply(
+      "global_side_input",
+      Window.into[String](new GlobalWindows())
+        .triggering(Repeatedly.forever(AfterPane.elementCountAtLeast(1)))
+        .discardingFiredPanes())
+    .apply("side_view", View.asSingleton())
+
+  /* final pipeline */
   p.apply("read-pubsub", PubsubIO.readStrings().fromSubscription(fullSubscriptionName))
-    .apply("process", ParDo.of(new MyDoFn))
+    .apply("process", ParDo.of(new MyDoFn(sideView)).withSideInputs(sideView))
     .apply("write-bq", BigQueryIO
       .writeTableRows()
       .to(targetTable)
