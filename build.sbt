@@ -1,4 +1,4 @@
-val name = "beam-sideinput"
+val name = "beam-dynamic"
 val scalaV = "2.12.4"
 
 lazy val root: Project =
@@ -13,6 +13,7 @@ lazy val root: Project =
         "com.typesafe.scala-logging" %% "scala-logging" % "3.7.2",
         "ch.qos.logback" % "logback-classic" % "1.2.3",
         "com.typesafe" % "config" % "1.3.2",
+        "org.scala-lang" % "scala-compiler" % scalaV
       ))
 
 import scalariform.formatter.preferences._
