@@ -61,11 +61,11 @@ object Beam extends App {
   val targetTable = new TableReference().setProjectId(projectId).setDatasetId(dataset).setTableId(tableName)
 
   /* converting strings to table row, getting dynamic parsed memoized mapping functions */
-  class MyDoFn(sideView: PCollectionView[String]) extends DoFn[String, TableRow] with LazyLogging {
+  class MyDoFn(sideView: PCollectionView[java.util.List[String]]) extends DoFn[String, TableRow] with LazyLogging {
     @ProcessElement
     def processElement(c: ProcessContext) {
       val t0 = System.currentTimeMillis()
-      val sideInput = c.sideInput(sideView)
+      val sideInput = c.sideInput(sideView).get(0)
       val inputString = c.element()
       Try {
         val json = new JsonParser().parse(inputString).getAsJsonObject
@@ -92,7 +92,7 @@ object Beam extends App {
       Window.into[String](new GlobalWindows())
         .triggering(Repeatedly.forever(AfterPane.elementCountAtLeast(1)))
         .discardingFiredPanes())
-    .apply("side_view", View.asSingleton())
+    .apply("side_view", View.asList())
 
   /* final pipeline */
   p.apply("read-pubsub", PubsubIO.readStrings().fromSubscription(fullSubscriptionName))
