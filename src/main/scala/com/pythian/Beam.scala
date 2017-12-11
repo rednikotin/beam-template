@@ -62,10 +62,10 @@ object Beam extends App {
   val targetTable = new TableReference().setProjectId(projectId).setDatasetId(dataset).setTableId(tableName)
 
   /* convering strings to table rows and pass them to output when sideinput contains "ON" */
-  class MyDoFn(sideView: PCollectionView[String]) extends DoFn[String, TableRow] with LazyLogging {
+  class MyDoFn(sideView: PCollectionView[java.util.List[String]]) extends DoFn[String, TableRow] with LazyLogging {
     @ProcessElement
     def processElement(c: ProcessContext) {
-      val sideInput = c.sideInput(sideView)
+      val sideInput = c.sideInput(sideView).get(0)
       val inputString = c.element()
       if (sideInput == "ENABLED") {
         Try {
@@ -96,7 +96,7 @@ object Beam extends App {
       Window.into[String](new GlobalWindows())
         .triggering(Repeatedly.forever(AfterPane.elementCountAtLeast(1)))
         .discardingFiredPanes())
-    .apply("side_view", View.asSingleton())
+    .apply("side_view", View.asList())
 
   /* final pipeline */
   p.apply("read-pubsub", PubsubIO.readStrings().fromSubscription(fullSubscriptionName))
